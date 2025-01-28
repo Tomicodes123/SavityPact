@@ -13,6 +13,7 @@
 (define-constant err-duplicate-participants (err u108))
 (define-constant err-invalid-referrer (err u109))
 (define-constant err-self-referral (err u110))
+(define-constant err-invalid-amount (err u111))
 
 ;; Data structures
 (define-map savings-goals
@@ -235,6 +236,7 @@
         (
             (goal (unwrap! (get-goal goal-id) err-invalid-goal))
         )
+        (asserts! (> amount u0) err-invalid-amount)
         (asserts! (or
             (is-eq (get owner goal) tx-sender)
             (is-some (index-of (get participants goal) tx-sender))
@@ -264,6 +266,7 @@
         (
             (goal (unwrap! (get-goal goal-id) err-invalid-goal))
         )
+        (asserts! (> amount u0) err-invalid-amount)
         (asserts! (is-eq (get owner goal) tx-sender) err-unauthorized)
         (asserts! (<= amount (get current-amount goal)) err-insufficient-funds)
         
