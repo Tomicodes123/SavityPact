@@ -1,5 +1,5 @@
 ;; SavityPact - Decentralized Savings Smart Contract
-;; Contract for managing personal and group savings goals with customizable unlock conditions
+;; Contract for managing personal and group savings goals with customizable unlock conditions and referral system
 
 (define-constant contract-owner tx-sender)
 (define-constant err-owner-only (err u100))
@@ -11,6 +11,9 @@
 (define-constant err-max-goals-reached (err u106))
 (define-constant err-invalid-participants (err u107))
 (define-constant err-duplicate-participants (err u108))
+(define-constant err-invalid-referrer (err u109))
+(define-constant err-self-referral (err u110))
+(define-constant err-invalid-amount (err u111))
 
 ;; Data structures
 (define-map savings-goals
@@ -31,8 +34,22 @@
     (list 20 uint)  ;; List of goal IDs
 )
 
+;; Referral system data structures
+(define-map referrals
+    { user: principal }
+    { referrer: (optional principal) }
+)
+
+(define-map referral-rewards
+    { user: principal }
+    { rewards: uint }
+)
+
 ;; Counter for generating unique goal IDs
 (define-data-var goal-counter uint u0)
+
+;; Referral reward percentage (e.g., 5% = u5)
+(define-data-var referral-reward-percent uint u5)
 
 ;; Read-only functions
 (define-read-only (get-goal (goal-id uint))
@@ -41,6 +58,14 @@
 
 (define-read-only (get-user-goals (user principal))
     (default-to (list) (map-get? user-goals { user: user }))
+)
+
+(define-read-only (get-referrer (user principal))
+    (get referrer (default-to { referrer: none } (map-get? referrals { user: user })))
+)
+
+(define-read-only (get-referral-rewards (user principal))
+    (get rewards (default-to { rewards: u0 } (map-get? referral-rewards { user: user })))
 )
 
 ;; Helper function to safely append to a list with max size check
@@ -211,6 +236,7 @@
         (
             (goal (unwrap! (get-goal goal-id) err-invalid-goal))
         )
+        (asserts! (> amount u0) err-invalid-amount)
         (asserts! (or
             (is-eq (get owner goal) tx-sender)
             (is-some (index-of (get participants goal) tx-sender))
@@ -226,6 +252,10 @@
                 current-amount: (+ (get current-amount goal) amount)
             })
         )
+
+        ;; Process referral reward
+        (process-referral-reward tx-sender amount)
+        
         (ok true)
     )
 )
@@ -236,6 +266,7 @@
         (
             (goal (unwrap! (get-goal goal-id) err-invalid-goal))
         )
+        (asserts! (> amount u0) err-invalid-amount)
         (asserts! (is-eq (get owner goal) tx-sender) err-unauthorized)
         (asserts! (<= amount (get current-amount goal)) err-insufficient-funds)
         
@@ -258,3 +289,67 @@
         (ok true)
     )
 )
+
+;; Register a new user with a referrer
+(define-public (register-with-referrer (referrer principal))
+    (begin
+        (asserts! (not (is-eq tx-sender referrer)) err-self-referral)
+        (asserts! (is-none (get-referrer tx-sender)) err-invalid-referrer)
+        (map-set referrals
+            { user: tx-sender }
+            { referrer: (some referrer) }
+        )
+        (ok true)
+    )
+)
+
+;; Process referral reward
+(define-private (process-referral-reward (user principal) (deposit-amount uint))
+    (let
+        (
+            (referrer (get-referrer user))
+        )
+        (match referrer
+            referrer-principal
+            (let
+                (
+                    (reward-amount (/ (* deposit-amount (var-get referral-reward-percent)) u100))
+                    (current-rewards (get-referral-rewards referrer-principal))
+                )
+                (map-set referral-rewards
+                    { user: referrer-principal }
+                    { rewards: (+ current-rewards reward-amount) }
+                )
+            )
+            ;; Do nothing if there's no referrer
+            false
+        )
+    )
+)
+
+;; Claim referral rewards
+(define-public (claim-referral-rewards)
+    (let
+        (
+            (rewards (get-referral-rewards tx-sender))
+        )
+        (asserts! (> rewards u0) err-insufficient-funds)
+        (try! (as-contract (stx-transfer? rewards (as-contract tx-sender) tx-sender)))
+        (map-set referral-rewards
+            { user: tx-sender }
+            { rewards: u0 }
+        )
+        (ok rewards)
+    )
+)
+
+;; Set referral reward percentage (only contract owner)
+(define-public (set-referral-reward-percent (new-percent uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (asserts! (<= new-percent u100) err-invalid-goal)
+        (var-set referral-reward-percent new-percent)
+        (ok true)
+    )
+)
+
