@@ -9,6 +9,8 @@
 (define-constant err-insufficient-funds (err u104))
 (define-constant err-goal-locked (err u105))
 (define-constant err-max-goals-reached (err u106))
+(define-constant err-invalid-participants (err u107))
+(define-constant err-duplicate-participants (err u108))
 
 ;; Data structures
 (define-map savings-goals
@@ -52,6 +54,33 @@
     )
 )
 
+;; Helper function to validate and sanitize participants list
+(define-private (validate-and-sanitize-participants (participants (list 20 principal)))
+    (begin
+        (asserts! (> (len participants) u0) err-invalid-participants)
+        (let
+            (
+                (unique-participants (as-max-len? (list-unique participants) u20))
+            )
+            (asserts! (is-some unique-participants) err-invalid-participants)
+            (ok (unwrap! unique-participants err-invalid-participants))
+        )
+    )
+)
+
+;; Helper function to get unique list of principals
+(define-private (list-unique (lst (list 20 principal)))
+    (fold remove-duplicates lst (list))
+)
+
+;; Helper function to remove duplicates from list
+(define-private (remove-duplicates (item principal) (acc (list 20 principal)))
+    (if (is-some (index-of acc item))
+        acc
+        (unwrap! (as-max-len? (append acc item) u20) acc)
+    )
+)
+
 ;; Create a new personal savings goal
 (define-public (create-personal-goal (target-amount uint) (unlock-height uint) (threshold-percent uint))
     (let
@@ -77,7 +106,6 @@
             }
         )
         
-        ;; Update user's goal list with size check
         (let
             (
                 (updated-goals (try! (safe-append current-goals new-goal-id)))
@@ -99,30 +127,37 @@
         (
             (new-goal-id (var-get goal-counter))
         )
+        (asserts! (> (len participants) u0) err-invalid-participants)
         (asserts! (> target-amount u0) err-invalid-goal)
         (asserts! (>= unlock-height stacks-block-height) err-invalid-goal)
         
-        ;; Check if all participants can add more goals
-        (try! (fold check-participant-capacity participants (ok true)))
-        
-        (map-set savings-goals
-            { goal-id: new-goal-id }
-            {
-                owner: tx-sender,
-                target-amount: target-amount,
-                current-amount: u0,
-                unlock-height: unlock-height,
-                is-group-goal: true,
-                participants: participants,
-                threshold-percent: u100
-            }
+        (let
+            (
+                (sanitized-participants (try! (validate-and-sanitize-participants participants)))
+                (owner-included-participants (unwrap! (as-max-len? (append sanitized-participants tx-sender) u20) err-invalid-participants))
+            )
+            ;; Check if all participants can add more goals
+            (try! (fold check-participant-capacity owner-included-participants (ok true)))
+            
+            (map-set savings-goals
+                { goal-id: new-goal-id }
+                {
+                    owner: tx-sender,
+                    target-amount: target-amount,
+                    current-amount: u0,
+                    unlock-height: unlock-height,
+                    is-group-goal: true,
+                    participants: owner-included-participants,
+                    threshold-percent: u100
+                }
+            )
+            
+            ;; Add goal to all participants' lists
+            (try! (process-participants owner-included-participants new-goal-id))
+            
+            (var-set goal-counter (+ new-goal-id u1))
+            (ok new-goal-id)
         )
-        
-        ;; Add goal to all participants' lists
-        (try! (process-participants participants new-goal-id))
-        
-        (var-set goal-counter (+ new-goal-id u1))
-        (ok new-goal-id)
     )
 )
 
@@ -144,12 +179,7 @@
 
 ;; Helper function to process all participants
 (define-private (process-participants (participants (list 20 principal)) (goal-id uint))
-    (let
-        (
-            (result (fold add-goal-to-participant participants (ok true)))
-        )
-        result
-    )
+    (fold add-goal-to-participant participants (ok true))
 )
 
 ;; Helper function to add goal to participant's list
